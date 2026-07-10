@@ -10,6 +10,9 @@
 import os
 import numpy as np
 from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedback, REGISTRY
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -51,8 +54,13 @@ class A21Vectorization(Algorithm):
         Args:
             input_data: 分割图路径 (str, .tif)
         """
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
         seg_path = input_data
         if not seg_path or not os.path.exists(seg_path):
+            logger.error(f"分割图无效: {seg_path}")
+            logger.timing_end("total")
+            logger.info(f"完成 {self.display_name()}, status=1")
             return AlgoResult(status=1, message=f"分割图无效: {seg_path}")
 
         output_geojson = context.param("output_geojson",
@@ -69,6 +77,8 @@ class A21Vectorization(Algorithm):
         import json
 
         # 1. 读取分割图
+        logger.debug("开始读取分割图")
+        logger.timing_start("read_seg")
         feedback.set_progress_text("读取分割图...")
         with rasterio.open(seg_path) as src:
             seg = src.read(1)
@@ -76,8 +86,12 @@ class A21Vectorization(Algorithm):
             crs = src.crs
         feedback.push_info(f"分割图尺寸: {seg.shape}")
         feedback.set_progress(20)
+        logger.timing_end("read_seg")
+        logger.debug(f"分割图读取完成, 尺寸={seg.shape}")
 
         # 2. 栅格转矢量
+        logger.debug("开始栅格转矢量")
+        logger.timing_start("raster_to_vector")
         feedback.set_progress_text("栅格转矢量...")
         features = []
         class_stats = {}
@@ -115,8 +129,12 @@ class A21Vectorization(Algorithm):
 
         feedback.set_progress(70)
         feedback.push_info(f"提取多边形: {len(features)} 个")
+        logger.timing_end("raster_to_vector")
+        logger.debug(f"栅格转矢量完成, 多边形数={len(features)}")
 
         # 3. 输出
+        logger.debug("开始保存GeoJSON")
+        logger.timing_start("save")
         feedback.set_progress_text("保存GeoJSON...")
         geojson = {
             "type": "FeatureCollection",
@@ -128,12 +146,14 @@ class A21Vectorization(Algorithm):
         }
         with open(output_geojson, 'w', encoding='utf-8') as f:
             json.dump(geojson, f, ensure_ascii=False)
+        logger.timing_end("save")
+        logger.debug(f"GeoJSON已保存: {output_geojson}")
 
         feedback.set_progress(100)
         for cid, stats in class_stats.items():
             feedback.push_info(f"  类别 {cid}: {stats['count']} 个多边形, 总面积 {stats['area']:.1f}m²")
 
-        return AlgoResult(
+        result = AlgoResult(
             status=0,
             message=f"矢量化完成, {len(features)} 个多边形",
             outputs=[output_geojson],
@@ -143,3 +163,6 @@ class A21Vectorization(Algorithm):
                 "class_stats": class_stats,
             }
         )
+        logger.timing_end("total")
+        logger.info(f"完成 {self.display_name()}, status={result.status}")
+        return result

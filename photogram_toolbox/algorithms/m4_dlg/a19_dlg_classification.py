@@ -8,6 +8,9 @@
 import os
 import numpy as np
 from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedback, REGISTRY
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -49,8 +52,13 @@ class A19DLGClassification(Algorithm):
         Args:
             input_data: DOM影像路径 (str, .tif)
         """
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
         dom_path = input_data
         if not dom_path or not os.path.exists(dom_path):
+            logger.error(f"DOM文件无效: {dom_path}")
+            logger.timing_end("total")
+            logger.info(f"完成 {self.display_name()}, status=1")
             return AlgoResult(status=1, message=f"DOM文件无效: {dom_path}")
 
         output_path = context.param("output_path",
@@ -64,18 +72,27 @@ class A19DLGClassification(Algorithm):
         from scipy import ndimage
 
         # 1. 读取DOM
+        logger.debug("开始读取DOM")
+        logger.timing_start("read_dom")
         feedback.set_progress_text("读取DOM...")
         with rasterio.open(dom_path) as src:
             dom = src.read()
             profile = src.profile
         feedback.push_info(f"DOM尺寸: {dom.shape}")
         feedback.set_progress(20)
+        logger.timing_end("read_dom")
+        logger.debug(f"DOM读取完成, 尺寸={dom.shape}")
 
         bands, rows, cols = dom.shape
         if bands < 3:
+            logger.error(f"DOM波段数不足: {bands}, 至少需要3波段")
+            logger.timing_end("total")
+            logger.info(f"完成 {self.display_name()}, status=1")
             return AlgoResult(status=1, message="DOM至少需要3波段")
 
         # 2. 特征提取
+        logger.debug("开始特征提取")
+        logger.timing_start("feature_extraction")
         feedback.set_progress_text("提取特征...")
         rgb = np.transpose(dom[:3], (1, 2, 0)).astype(float)
         r, g, b = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
@@ -101,8 +118,12 @@ class A19DLGClassification(Algorithm):
         flat_features = feature_stack.reshape(-1, len(features))
         feedback.push_info(f"特征数: {len(features)}")
         feedback.set_progress(40)
+        logger.timing_end("feature_extraction")
+        logger.debug(f"特征提取完成, 特征数={len(features)}")
 
         # 3. 无监督分类(简化版: K-means)
+        logger.debug("开始K-means分类")
+        logger.timing_start("classification")
         feedback.set_progress_text("执行分类...")
         from sklearn.cluster import KMeans
         n_classes = context.param("n_classes", 5)
@@ -117,18 +138,24 @@ class A19DLGClassification(Algorithm):
         labels = kmeans.predict(flat_features)
         label_map = labels.reshape(rows, cols).astype(np.uint8)
         feedback.set_progress(80)
+        logger.timing_end("classification")
+        logger.debug(f"K-means分类完成, 类别数={n_classes}")
 
         # 4. 保存
+        logger.debug("开始保存分类结果")
+        logger.timing_start("save")
         feedback.set_progress_text("保存分类结果...")
         out_profile = profile.copy()
         out_profile.update(dtype='uint8', count=1)
         with rasterio.open(output_path, 'w', **out_profile) as dst:
             dst.write(label_map, 1)
+        logger.timing_end("save")
+        logger.debug(f"分类结果已保存: {output_path}")
 
         feedback.set_progress(100)
         feedback.push_info(f"分类完成: {n_classes} 类")
 
-        return AlgoResult(
+        result = AlgoResult(
             status=0,
             message=f"DLG要素分类完成, {n_classes} 类",
             outputs=[output_path],
@@ -138,3 +165,6 @@ class A19DLGClassification(Algorithm):
                 "n_features": len(features),
             }
         )
+        logger.timing_end("total")
+        logger.info(f"完成 {self.display_name()}, status={result.status}")
+        return result

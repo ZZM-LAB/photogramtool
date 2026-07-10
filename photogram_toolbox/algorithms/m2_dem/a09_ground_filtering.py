@@ -13,6 +13,9 @@ from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedb
 from photogram_toolbox.core.pointcloud_utils import (
     load_pointcloud, save_pointcloud, segment_ground_ransac
 )
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -53,9 +56,16 @@ class A09GroundFiltering(Algorithm):
         Args:
             input_data: 输入点云路径 (str, .ply)
         """
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
+
         input_ply = input_data
         if not input_ply or not os.path.exists(input_ply):
-            return AlgoResult(status=1, message=f"点云文件无效: {input_ply}")
+            logger.error(f"点云文件无效: {input_ply}")
+            result = AlgoResult(status=1, message=f"点云文件无效: {input_ply}")
+            logger.timing_end("total")
+            logger.info(f"完成 {self.display_name()}, status={result.status}")
+            return result
 
         ground_ply = context.param("ground_ply",
                                     input_ply.replace(".ply", "_ground.ply"))
@@ -65,24 +75,32 @@ class A09GroundFiltering(Algorithm):
 
         feedback.push_info(f"输入: {input_ply}")
         feedback.push_info(f"距离阈值: {distance_threshold}")
+        logger.debug(f"参数: distance_threshold={distance_threshold}, ground_ply={ground_ply}, nonground_ply={nonground_ply}")
 
         # 加载
         feedback.set_progress_text("加载点云...")
+        logger.timing_start("load_pointcloud")
         pcd = load_pointcloud(input_ply)
         total = len(pcd.points)
+        logger.timing_end("load_pointcloud")
         feedback.push_info(f"总点数: {total}")
+        logger.debug(f"总点数: {total}")
         feedback.set_progress(30)
 
         # RANSAC 分割
         feedback.set_progress_text("RANSAC平面分割...")
+        logger.timing_start("ransac_segment")
         ground, non_ground, plane_model = segment_ground_ransac(
             pcd, distance_threshold=distance_threshold
         )
+        logger.timing_end("ransac_segment")
         feedback.set_progress(70)
 
         # 保存
+        logger.timing_start("save_pointcloud")
         save_pointcloud(ground, ground_ply)
         save_pointcloud(non_ground, nonground_ply)
+        logger.timing_end("save_pointcloud")
 
         ground_count = len(ground.points)
         nonground_count = len(non_ground.points)
@@ -95,8 +113,9 @@ class A09GroundFiltering(Algorithm):
         )
         feedback.push_info(f"平面方程: {plane_model[0]:.3f}x + {plane_model[1]:.3f}y + "
                           f"{plane_model[2]:.3f}z + {plane_model[3]:.3f} = 0")
+        logger.debug(f"分割结果: 地面点 {ground_count} ({ground_rate:.1f}%), 非地面点 {nonground_count}, 平面方程={plane_model}")
 
-        return AlgoResult(
+        result = AlgoResult(
             status=0,
             message=f"地面滤波完成,地面点 {ground_count} ({ground_rate:.1f}%)",
             outputs=[ground_ply, nonground_ply],
@@ -109,3 +128,6 @@ class A09GroundFiltering(Algorithm):
                 "ground_rate": ground_rate,
             }
         )
+        logger.timing_end("total")
+        logger.info(f"完成 {self.display_name()}, status={result.status}")
+        return result

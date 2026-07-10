@@ -11,6 +11,9 @@ import os
 import json
 import numpy as np
 from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedback, REGISTRY
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -52,8 +55,13 @@ class A22TopologyBuilder(Algorithm):
         Args:
             input_data: GeoJSON路径 (str)
         """
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
         geojson_path = input_data
         if not geojson_path or not os.path.exists(geojson_path):
+            logger.error(f"GeoJSON无效: {geojson_path}")
+            logger.timing_end("total")
+            logger.info(f"完成 {self.display_name()}, status=1")
             return AlgoResult(status=1, message=f"GeoJSON无效: {geojson_path}")
 
         output_path = context.param("output_path",
@@ -65,6 +73,8 @@ class A22TopologyBuilder(Algorithm):
         from shapely.ops import unary_union
 
         # 1. 读取
+        logger.debug("开始读取矢量数据")
+        logger.timing_start("read")
         feedback.set_progress_text("读取矢量数据...")
         with open(geojson_path, 'r', encoding='utf-8') as f:
             geojson = json.load(f)
@@ -73,11 +83,18 @@ class A22TopologyBuilder(Algorithm):
         n = len(features)
         feedback.push_info(f"要素数: {n}")
         feedback.set_progress(20)
+        logger.timing_end("read")
+        logger.debug(f"矢量数据读取完成, 要素数={n}")
 
         if n < 2:
+            logger.error(f"要素数不足: {n}, 至少需要2个")
+            logger.timing_end("total")
+            logger.info(f"完成 {self.display_name()}, status=1")
             return AlgoResult(status=1, message="要素数不足")
 
         # 2. 构建几何列表
+        logger.debug("开始构建几何列表")
+        logger.timing_start("build_geometries")
         geometries = []
         for feat in features:
             geom = shp_shape(feat["geometry"])
@@ -85,8 +102,12 @@ class A22TopologyBuilder(Algorithm):
                 geom = geom.buffer(0)
             geometries.append(geom)
         feedback.set_progress(40)
+        logger.timing_end("build_geometries")
+        logger.debug(f"几何列表构建完成, 数量={len(geometries)}")
 
         # 3. 检测相邻关系
+        logger.debug("开始构建拓扑邻接关系")
+        logger.timing_start("adjacency")
         feedback.set_progress_text("构建拓扑邻接关系...")
         adjacency = []
         overlaps = []
@@ -118,8 +139,12 @@ class A22TopologyBuilder(Algorithm):
                 feedback.set_progress(40 + int(i / n * 50))
 
         feedback.set_progress(70)
+        logger.timing_end("adjacency")
+        logger.debug(f"拓扑邻接关系构建完成, 相邻={len(adjacency)}, 重叠={len(overlaps)}")
 
         # 4. 检测缝隙
+        logger.debug("开始检测缝隙")
+        logger.timing_start("gaps")
         feedback.set_progress_text("检测缝隙...")
         union = unary_union(geometries)
         gaps = []
@@ -133,8 +158,12 @@ class A22TopologyBuilder(Algorithm):
                     })
 
         feedback.set_progress(90)
+        logger.timing_end("gaps")
+        logger.debug(f"缝隙检测完成, 缝隙数={len(gaps)}")
 
         # 5. 输出
+        logger.debug("开始保存拓扑结果")
+        logger.timing_start("save")
         result = {
             "feature_count": n,
             "adjacency_count": len(adjacency),
@@ -152,15 +181,20 @@ class A22TopologyBuilder(Algorithm):
 
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
+        logger.timing_end("save")
+        logger.debug(f"拓扑结果已保存: {output_path}")
 
         feedback.set_progress(100)
         feedback.push_info(f"相邻关系: {len(adjacency)}")
         feedback.push_info(f"重叠错误: {len(overlaps)}")
         feedback.push_info(f"缝隙: {len(gaps)}")
 
-        return AlgoResult(
+        algo_result = AlgoResult(
             status=0,
             message=f"拓扑构建完成: {len(adjacency)} 相邻, {len(overlaps)} 重叠, {len(gaps)} 缝隙",
             outputs=[output_path],
             metadata=result["summary"]
         )
+        logger.timing_end("total")
+        logger.info(f"完成 {self.display_name()}, status={algo_result.status}")
+        return algo_result

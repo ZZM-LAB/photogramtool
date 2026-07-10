@@ -11,6 +11,9 @@ import os
 import json
 import numpy as np
 from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedback, REGISTRY
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -79,8 +82,13 @@ class A27GeneticOptimization(Algorithm):
         Args:
             input_data: 航线GeoJSON (str)
         """
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
+
         flight_path = input_data
         if not flight_path or not os.path.exists(flight_path):
+            logger.error(f"航线文件无效: {flight_path}")
+            logger.timing_end("total")
             return AlgoResult(status=1, message=f"航线文件无效: {flight_path}")
 
         output_path = context.param("output_path",
@@ -93,8 +101,11 @@ class A27GeneticOptimization(Algorithm):
 
         # 1. 读取航线
         feedback.set_progress_text("读取航线...")
+        logger.debug("读取航线文件", flight_path=flight_path)
+        logger.timing_start("read_flight")
         with open(flight_path, 'r', encoding='utf-8') as f:
             geojson = json.load(f)
+        logger.timing_end("read_flight")
 
         # 提取每条航线的起点
         line_starts = {}
@@ -107,14 +118,19 @@ class A27GeneticOptimization(Algorithm):
         line_ids = sorted(line_starts.keys())
         n_lines = len(line_ids)
         if n_lines < 2:
+            logger.error(f"航线数不足, 需≥2, 实际: {n_lines}")
+            logger.timing_end("total")
             return AlgoResult(status=1, message="航线数不足")
 
         start_points = np.array([line_starts[i] for i in line_ids])
+        logger.debug(f"提取航线起点数: {n_lines}")
         feedback.push_info(f"航线数: {n_lines}")
         feedback.set_progress(20)
 
         # 2. 遗传算法
         feedback.set_progress_text("执行遗传算法优化...")
+        logger.timing_start("ga_optimize")
+        logger.debug(f"遗传算法参数: population_size={population_size}, n_generations={n_generations}, mutation_rate={mutation_rate}")
 
         # 初始种群
         population = [np.random.permutation(n_lines) for _ in range(population_size)]
@@ -125,6 +141,9 @@ class A27GeneticOptimization(Algorithm):
 
         for gen in range(n_generations):
             if feedback.is_canceled():
+                logger.warning("用户取消执行")
+                logger.timing_end("ga_optimize")
+                logger.timing_end("total")
                 return AlgoResult(status=2, message="用户取消")
 
             # 评估适应度
@@ -162,10 +181,14 @@ class A27GeneticOptimization(Algorithm):
             if gen % max(1, n_generations // 10) == 0:
                 feedback.set_progress(20 + int(gen / n_generations * 70))
                 feedback.push_info(f"  Gen {gen}: best={best_distance:.1f}m")
+                logger.debug(f"GA 代数 {gen}, 当前最优距离: {best_distance:.1f}m")
 
+        logger.timing_end("ga_optimize")
+        logger.debug(f"遗传算法完成, 最优距离: {best_distance:.1f}m")
         feedback.set_progress(90)
 
         # 3. 重新排列航线
+        logger.timing_start("reorder_lines")
         optimized_order = [line_ids[i] for i in best_order]
         feedback.push_info(f"最优顺序: {optimized_order}")
         feedback.push_info(f"最优距离: {best_distance:.1f}m")
@@ -196,13 +219,17 @@ class A27GeneticOptimization(Algorithm):
                 "generations": n_generations,
             }
         }
+        logger.timing_end("reorder_lines")
+        logger.debug(f"写入优化结果: {output_path}")
+        logger.timing_start("write_output")
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(result_geojson, f, ensure_ascii=False)
+        logger.timing_end("write_output")
 
         feedback.set_progress(100)
         feedback.push_info(f"优化完成: {output_path}")
 
-        return AlgoResult(
+        result = AlgoResult(
             status=0,
             message=f"遗传算法优化完成, 总距离 {best_distance:.1f}m",
             outputs=[output_path],
@@ -213,3 +240,6 @@ class A27GeneticOptimization(Algorithm):
                 "generations": n_generations,
             }
         )
+        logger.timing_end("total")
+        logger.info(f"完成 {self.display_name()}, status={result.status}")
+        return result

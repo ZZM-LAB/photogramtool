@@ -10,6 +10,9 @@
 import os
 import numpy as np
 from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedback, REGISTRY
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -51,8 +54,13 @@ class A17MosaicColorBalancing(Algorithm):
         Args:
             input_data: 正射影像目录 (str)
         """
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
+
         ortho_dir = input_data
         if not ortho_dir or not os.path.isdir(ortho_dir):
+            logger.error(f"目录无效: {ortho_dir}")
+            logger.timing_end("total")
             return AlgoResult(status=1, message=f"目录无效: {ortho_dir}")
 
         output_dom = context.param("output_dom",
@@ -64,30 +72,44 @@ class A17MosaicColorBalancing(Algorithm):
         import cv2
 
         # 1. 扫描正射影像
+        logger.debug("开始扫描正射影像", ortho_dir=ortho_dir)
         ortho_files = [os.path.join(ortho_dir, f)
                        for f in sorted(os.listdir(ortho_dir))
                        if f.endswith('_ortho.tif')]
         if not ortho_files:
+            logger.error("未找到正射影像")
+            logger.timing_end("total")
             return AlgoResult(status=1, message="未找到正射影像")
 
         feedback.push_info(f"正射影像数: {len(ortho_files)}")
+        logger.debug(f"扫描到正射影像数: {len(ortho_files)}")
         feedback.set_progress(20)
 
         # 2. 计算全局范围
+        logger.debug("开始打开正射影像数据源")
+        logger.timing_start("open_datasets")
         src_datasets = []
         for f in ortho_files:
             src_datasets.append(rasterio.open(f))
+        logger.timing_end("open_datasets")
+        logger.debug(f"数据源打开完成: {len(src_datasets)} 个")
 
         # 3. 镶嵌
         feedback.set_progress_text("执行镶嵌...")
         # 使用 rasterio.merge 进行简单镶嵌
         from rasterio.merge import merge as rio_merge
+        logger.debug("开始执行镶嵌(rasterio.merge)")
+        logger.timing_start("mosaic")
         mosaic, mosaic_transform = rio_merge(src_datasets)
+        logger.timing_end("mosaic")
+        logger.debug(f"镶嵌完成: shape={mosaic.shape}")
         feedback.set_progress(50)
         feedback.push_info(f"镶嵌结果: {mosaic.shape}")
 
         # 4. 色调均衡(直方图匹配)
         feedback.set_progress_text("色调均衡...")
+        logger.debug("开始色调均衡(CLAHE)")
+        logger.timing_start("color_balance")
         if mosaic.shape[0] >= 3:
             # RGB三波段
             rgb = np.transpose(mosaic[:3], (1, 2, 0)).astype(np.uint8)
@@ -99,11 +121,15 @@ class A17MosaicColorBalancing(Algorithm):
             balanced = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
 
             mosaic[:3] = np.transpose(balanced, (2, 0, 1))
+        logger.timing_end("color_balance")
+        logger.debug("色调均衡完成")
 
         feedback.set_progress(80)
 
         # 5. 保存
         feedback.set_progress_text("保存DOM...")
+        logger.debug("开始保存DOM", output_dom=output_dom)
+        logger.timing_start("save_dom")
         profile = src_datasets[0].profile
         profile.update(
             height=mosaic.shape[1],
@@ -114,15 +140,18 @@ class A17MosaicColorBalancing(Algorithm):
 
         with rasterio.open(output_dom, 'w', **profile) as dst:
             dst.write(mosaic)
+        logger.timing_end("save_dom")
+        logger.debug(f"DOM已保存: {output_dom}")
 
         # 关闭数据源
         for ds in src_datasets:
             ds.close()
+        logger.debug("数据源已全部关闭")
 
         feedback.set_progress(100)
         feedback.push_info(f"DOM镶嵌完成: {output_dom}")
 
-        return AlgoResult(
+        result = AlgoResult(
             status=0,
             message=f"镶嵌与色调均衡完成 ({mosaic.shape[1]}x{mosaic.shape[2]})",
             outputs=[output_dom],
@@ -132,3 +161,6 @@ class A17MosaicColorBalancing(Algorithm):
                 "mosaic_shape": mosaic.shape,
             }
         )
+        logger.timing_end("total")
+        logger.info(f"完成 {self.display_name()}, status={result.status}")
+        return result

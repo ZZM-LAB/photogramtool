@@ -9,6 +9,9 @@
 import os
 from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedback, REGISTRY
 from photogram_toolbox.core.colmap_wrapper import ensure_dir, undistort_images
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -49,13 +52,20 @@ class A06StereoModelGeneration(Algorithm):
         Args:
             input_data: 稀疏重建目录 (str)
         """
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
+
         sparse_dir = input_data
         if not sparse_dir or not os.path.isdir(sparse_dir):
+            logger.error(f"稀疏重建目录无效: {sparse_dir}")
+            logger.timing_end("total")
             return AlgoResult(status=1, message=f"稀疏重建目录无效: {sparse_dir}")
 
         work_dir = context.work_dir or os.path.dirname(sparse_dir)
         image_dir = context.param("image_dir", "")
         if not image_dir or not os.path.isdir(image_dir):
+            logger.error(f"影像目录无效: {image_dir},请通过image_dir参数指定")
+            logger.timing_end("total")
             return AlgoResult(
                 status=1,
                 message=f"影像目录无效: {image_dir},请通过image_dir参数指定"
@@ -67,20 +77,28 @@ class A06StereoModelGeneration(Algorithm):
         feedback.push_info(f"稀疏重建目录: {sparse_dir}")
         feedback.push_info(f"影像目录: {image_dir}")
         feedback.push_info(f"输出目录: {dense_dir}")
+        logger.debug(f"稀疏重建目录: {sparse_dir}, 影像目录: {image_dir}, 输出目录: {dense_dir}")
 
         # 去畸变
         feedback.set_progress_text("执行影像去畸变...")
+        logger.debug("开始执行影像去畸变")
+        logger.timing_start("undistort_images")
         output_dir = undistort_images(work_dir, image_dir, sparse_dir, dense_dir)
+        logger.timing_end("undistort_images")
+        logger.debug(f"影像去畸变完成, output_dir={output_dir}")
         feedback.set_progress(80)
 
         # 检查输出
         if not os.path.exists(output_dir):
+            logger.error(f"去畸变失败,未生成输出, output_dir={output_dir}")
+            logger.timing_end("total")
             return AlgoResult(status=1, message="去畸变失败,未生成输出")
 
         feedback.set_progress(100)
         feedback.push_info(f"去畸变完成: {output_dir}")
+        logger.debug(f"去畸变完成: {output_dir}")
 
-        return AlgoResult(
+        result = AlgoResult(
             status=0,
             message="立体模型生成完成(影像已去畸变)",
             outputs=[output_dir],
@@ -90,3 +108,6 @@ class A06StereoModelGeneration(Algorithm):
                 "image_dir": image_dir,
             }
         )
+        logger.timing_end("total")
+        logger.info(f"完成 {self.display_name()}, status={result.status}")
+        return result

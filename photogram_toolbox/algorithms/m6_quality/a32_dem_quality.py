@@ -11,6 +11,9 @@ import os
 import json
 import numpy as np
 from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedback, REGISTRY
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -52,21 +55,29 @@ class A32DEMQualityAssessment(Algorithm):
             input_data: DEM路径 (str, .tif)
         """
         dem_path = input_data
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
         if not dem_path or not os.path.exists(dem_path):
+            logger.error(f"DEM无效: {dem_path}")
+            logger.timing_end("total")
             return AlgoResult(status=1, message=f"DEM无效: {dem_path}")
 
         output_report = context.param("output_report",
                                        dem_path.replace(".tif", "_quality.json"))
+        logger.debug(f"输出报告路径: {output_report}")
 
         import rasterio
         from scipy import ndimage
 
         # 1. 读取DEM
         feedback.set_progress_text("读取DEM...")
+        logger.timing_start("read_dem")
         with rasterio.open(dem_path) as src:
             dem = src.read(1)
             transform = src.transform
             resolution = abs(transform.a)
+        logger.timing_end("read_dem")
+        logger.debug(f"DEM尺寸: {dem.shape}, 分辨率: {resolution}m")
         feedback.push_info(f"DEM尺寸: {dem.shape}, 分辨率: {resolution}m")
         feedback.set_progress(20)
 
@@ -78,22 +89,28 @@ class A32DEMQualityAssessment(Algorithm):
         feedback.push_info(f"有效像素: {valid_count}/{total_count} ({completeness*100:.1f}%)")
 
         if valid_count == 0:
+            logger.error("DEM全为空")
+            logger.timing_end("total")
             return AlgoResult(status=1, message="DEM全为空")
 
         valid_data = dem[valid]
         feedback.set_progress(40)
 
         # 2. 高程统计
+        logger.timing_start("elevation_stats")
         z_min = float(np.min(valid_data))
         z_max = float(np.max(valid_data))
         z_mean = float(np.mean(valid_data))
         z_std = float(np.std(valid_data))
+        logger.timing_end("elevation_stats")
+        logger.debug(f"高程范围: {z_min:.2f}-{z_max:.2f}, 均值: {z_mean:.2f}, std: {z_std:.2f}")
 
         feedback.push_info(f"高程范围: {z_min:.2f} - {z_max:.2f}m, 均值: {z_mean:.2f}m")
         feedback.set_progress(50)
 
         # 3. 坡度
         feedback.set_progress_text("计算坡度...")
+        logger.timing_start("slope")
         dem_filled = dem.copy()
         dem_filled[~valid] = z_mean
         grad_y, grad_x = np.gradient(dem_filled, resolution)
@@ -101,22 +118,30 @@ class A32DEMQualityAssessment(Algorithm):
         slope_valid = slope[valid]
         mean_slope = float(np.mean(slope_valid))
         max_slope = float(np.max(slope_valid))
+        logger.timing_end("slope")
+        logger.debug(f"坡度 mean={mean_slope:.2f}, max={max_slope:.2f}")
         feedback.set_progress(60)
 
         # 4. 粗糙度(局部标准差)
         feedback.set_progress_text("计算粗糙度...")
+        logger.timing_start("roughness")
         local_mean = ndimage.uniform_filter(dem_filled, size=5)
         local_sq_mean = ndimage.uniform_filter(dem_filled**2, size=5)
         local_std = np.sqrt(np.maximum(local_sq_mean - local_mean**2, 0))
         mean_roughness = float(np.mean(local_std[valid]))
+        logger.timing_end("roughness")
+        logger.debug(f"粗糙度: {mean_roughness:.4f}")
         feedback.set_progress(75)
 
         # 5. 异常值检测
         feedback.set_progress_text("检测异常值...")
+        logger.timing_start("outlier_detection")
         # 3σ原则
         outliers = np.abs(valid_data - z_mean) > 3 * z_std
         outlier_count = np.sum(outliers)
         outlier_rate = outlier_count / valid_count
+        logger.timing_end("outlier_detection")
+        logger.debug(f"异常值: {outlier_count} ({outlier_rate*100:.2f}%)")
         feedback.push_info(f"异常值: {outlier_count} ({outlier_rate*100:.2f}%)")
         feedback.set_progress(85)
 
@@ -174,15 +199,21 @@ class A32DEMQualityAssessment(Algorithm):
             }
         }
 
+        logger.timing_start("write_report")
         with open(output_report, 'w', encoding='utf-8') as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
+        logger.timing_end("write_report")
+        logger.debug(f"报告已写入: {output_report}")
 
         feedback.set_progress(100)
         feedback.push_info(f"质量评分: {overall:.1f}/100")
 
-        return AlgoResult(
+        logger.timing_end("total")
+        result = AlgoResult(
             status=0,
             message=f"DEM质量评定完成, 评分 {overall:.1f}/100",
             outputs=[output_report],
             metadata=report
         )
+        logger.info(f"完成 {self.display_name()}, status={result.status}")
+        return result

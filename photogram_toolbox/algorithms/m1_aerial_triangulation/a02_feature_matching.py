@@ -8,6 +8,9 @@ from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedb
 from photogram_toolbox.core.colmap_wrapper import (
     ensure_dir, database_path, extract_features, match_exhaustive
 )
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -49,33 +52,49 @@ class A02FeatureExtractionMatching(Algorithm):
             input_data: 工作目录路径 (str, 含 database.db)
                        或影像目录(会自动用 context.work_dir)
         """
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
+
         work_dir = input_data or context.work_dir
         if not work_dir:
+            logger.error("未指定工作目录")
+            logger.timing_end("total")
             return AlgoResult(status=1, message="未指定工作目录")
 
         db = database_path(work_dir)
         if not os.path.exists(db):
+            logger.error(f"数据库不存在: {db},请先运行A01内定向")
+            logger.timing_end("total")
             return AlgoResult(
                 status=1,
                 message=f"数据库不存在: {db},请先运行A01内定向"
             )
 
         feedback.push_info(f"工作目录: {work_dir}")
+        logger.debug(f"工作目录: {work_dir}, 数据库: {db}")
 
         # 1. SIFT特征提取
         feedback.set_progress_text("提取SIFT特征...")
         use_gpu = context.param("use_gpu", False)
+        logger.debug(f"开始SIFT特征提取, use_gpu={use_gpu}")
+        logger.timing_start("extract_features")
         extract_features(work_dir, use_gpu=use_gpu)
+        logger.timing_end("extract_features")
         feedback.set_progress(50)
         feedback.push_info("特征提取完成")
+        logger.debug("SIFT特征提取完成")
 
         # 2. 全量特征匹配
         feedback.set_progress_text("全量特征匹配...")
+        logger.debug("开始全量特征匹配")
+        logger.timing_start("match_exhaustive")
         match_exhaustive(work_dir, use_gpu=use_gpu)
+        logger.timing_end("match_exhaustive")
         feedback.set_progress(100)
         feedback.push_info("特征匹配完成")
+        logger.debug("全量特征匹配完成")
 
-        return AlgoResult(
+        result = AlgoResult(
             status=0,
             message="SIFT特征提取与匹配完成",
             outputs=[db],
@@ -85,3 +104,6 @@ class A02FeatureExtractionMatching(Algorithm):
                 "use_gpu": use_gpu,
             }
         )
+        logger.timing_end("total")
+        logger.info(f"完成 {self.display_name()}, status={result.status}")
+        return result

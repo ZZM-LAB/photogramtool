@@ -9,6 +9,9 @@
 import os
 import numpy as np
 from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedback, REGISTRY
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -50,9 +53,16 @@ class A13ContourGeneration(Algorithm):
         Args:
             input_data: DEM路径 (str, .tif)
         """
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
+
         dem_path = input_data
         if not dem_path or not os.path.exists(dem_path):
-            return AlgoResult(status=1, message=f"DEM文件无效: {dem_path}")
+            logger.error(f"DEM文件无效: {dem_path}")
+            result = AlgoResult(status=1, message=f"DEM文件无效: {dem_path}")
+            logger.timing_end("total")
+            logger.info(f"完成 {self.display_name()}, status={result.status}")
+            return result
 
         output_geojson = context.param("output_geojson",
                                         dem_path.replace(".tif", "_contours.geojson"))
@@ -60,6 +70,7 @@ class A13ContourGeneration(Algorithm):
 
         feedback.push_info(f"DEM: {dem_path}")
         feedback.push_info(f"等高距: {interval}m")
+        logger.debug(f"参数: interval={interval}, output_geojson={output_geojson}")
 
         import rasterio
         import matplotlib.pyplot as plt
@@ -67,14 +78,21 @@ class A13ContourGeneration(Algorithm):
 
         # 1. 读取DEM
         feedback.set_progress_text("读取DEM...")
+        logger.timing_start("read_dem")
         with rasterio.open(dem_path) as src:
             dem = src.read(1)
             transform = src.transform
+        logger.timing_end("read_dem")
+        logger.debug(f"DEM尺寸: {dem.shape}")
         feedback.set_progress(30)
 
         valid = ~np.isnan(dem)
         if not np.any(valid):
-            return AlgoResult(status=1, message="DEM全为空")
+            logger.error("DEM全为空")
+            result = AlgoResult(status=1, message="DEM全为空")
+            logger.timing_end("total")
+            logger.info(f"完成 {self.display_name()}, status={result.status}")
+            return result
 
         zmin = np.nanmin(dem)
         zmax = np.nanmax(dem)
@@ -82,19 +100,23 @@ class A13ContourGeneration(Algorithm):
                           np.ceil(zmax / interval) * interval + interval,
                           interval)
         feedback.push_info(f"高程范围: {zmin:.2f} - {zmax:.2f}m, 等高线数: {len(levels)}")
+        logger.debug(f"高程范围: {zmin:.2f} - {zmax:.2f}m, 等高线数: {len(levels)}")
         feedback.set_progress(50)
 
         # 2. 生成等高线
         feedback.set_progress_text("生成等高线...")
+        logger.timing_start("generate_contours")
         rows, cols = dem.shape
         x = np.arange(cols) * transform.a + transform.c
         y = np.arange(rows) * transform.e + transform.f
 
         contours = plt.contour(x, y, dem, levels=levels)
+        logger.timing_end("generate_contours")
         feedback.set_progress(70)
 
         # 3. 转为GeoJSON
         feedback.set_progress_text("输出GeoJSON...")
+        logger.timing_start("export_geojson")
         features = []
         for i, level in enumerate(contours.levels):
             try:
@@ -127,11 +149,13 @@ class A13ContourGeneration(Algorithm):
             json.dump(geojson, f, ensure_ascii=False)
 
         plt.close()
+        logger.timing_end("export_geojson")
 
         feedback.set_progress(100)
         feedback.push_info(f"等高线生成完成: {output_geojson} ({len(features)} 条)")
+        logger.debug(f"等高线生成完成: {output_geojson}, 共 {len(features)} 条")
 
-        return AlgoResult(
+        result = AlgoResult(
             status=0,
             message=f"等高线生成完成, {len(features)} 条",
             outputs=[output_geojson],
@@ -143,3 +167,6 @@ class A13ContourGeneration(Algorithm):
                 "contour_count": len(features),
             }
         )
+        logger.timing_end("total")
+        logger.info(f"完成 {self.display_name()}, status={result.status}")
+        return result

@@ -8,6 +8,9 @@ from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedb
 from photogram_toolbox.core.colmap_wrapper import (
     ensure_dir, create_database, import_images
 )
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -49,8 +52,13 @@ class A01InteriorOrientation(Algorithm):
         Args:
             input_data: 影像目录路径 (str)
         """
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
+
         image_dir = input_data
         if not image_dir or not os.path.isdir(image_dir):
+            logger.error(f"影像目录无效: {image_dir}")
+            logger.timing_end("total")
             return AlgoResult(status=1, message=f"影像目录无效: {image_dir}")
 
         work_dir = context.work_dir or os.path.join(image_dir, "..", "work")
@@ -58,21 +66,30 @@ class A01InteriorOrientation(Algorithm):
 
         feedback.push_info(f"影像目录: {image_dir}")
         feedback.push_info(f"工作目录: {work_dir}")
+        logger.debug(f"影像目录: {image_dir}, 工作目录: {work_dir}")
 
         # 1. 创建数据库
         feedback.set_progress_text("创建 COLMAP 数据库...")
+        logger.debug("开始创建 COLMAP 数据库")
+        logger.timing_start("create_database")
         db = create_database(work_dir)
+        logger.timing_end("create_database")
         feedback.set_progress(30)
         feedback.push_info(f"数据库: {db}")
+        logger.debug(f"数据库创建完成: {db}")
 
         # 2. 导入影像并推断相机参数
         feedback.set_progress_text("导入影像,推断相机内方位元素...")
         camera_model = context.param("camera_model", "SIMPLE_RADIAL")
         single_camera = context.param("single_camera", True)
+        logger.debug(f"开始导入影像, camera_model={camera_model}, single_camera={single_camera}")
+        logger.timing_start("import_images")
         import_images(image_dir, work_dir, camera_model, single_camera)
+        logger.timing_end("import_images")
+        logger.debug("影像导入完成")
 
         feedback.set_progress(100)
-        return AlgoResult(
+        result = AlgoResult(
             status=0,
             message=f"内定向完成,相机模型: {camera_model}",
             outputs=[db],
@@ -82,3 +99,6 @@ class A01InteriorOrientation(Algorithm):
                 "database": db,
             }
         )
+        logger.timing_end("total")
+        logger.info(f"完成 {self.display_name()}, status={result.status}")
+        return result

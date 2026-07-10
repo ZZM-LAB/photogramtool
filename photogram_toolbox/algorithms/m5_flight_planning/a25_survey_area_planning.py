@@ -11,6 +11,9 @@ import os
 import json
 import numpy as np
 from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedback, REGISTRY
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -51,8 +54,13 @@ class A25SurveyAreaPlanning(Algorithm):
         Args:
             input_data: 测区边界文件 (str, GeoJSON/坐标txt)
         """
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
+
         boundary_path = input_data
         if not boundary_path or not os.path.exists(boundary_path):
+            logger.error(f"边界文件无效: {boundary_path}")
+            logger.timing_end("total")
             return AlgoResult(status=1, message=f"边界文件无效: {boundary_path}")
 
         # 航摄参数
@@ -71,6 +79,8 @@ class A25SurveyAreaPlanning(Algorithm):
 
         # 1. 解析边界
         feedback.set_progress_text("解析测区边界...")
+        logger.debug("开始解析测区边界", boundary_path=boundary_path)
+        logger.timing_start("parse_boundary")
         coords = []
 
         if boundary_path.endswith('.geojson') or boundary_path.endswith('.json'):
@@ -91,19 +101,28 @@ class A25SurveyAreaPlanning(Algorithm):
                     if len(parts) >= 2:
                         coords.append([float(parts[0]), float(parts[1])])
 
+        logger.timing_end("parse_boundary")
+        logger.debug(f"解析得到边界点数: {len(coords)}")
+
         if len(coords) < 3:
+            logger.error(f"边界点数不足(需≥3), 实际: {len(coords)}")
+            logger.timing_end("total")
             return AlgoResult(status=1, message="边界点数不足(需≥3)")
 
         boundary = Polygon(coords)
         if not boundary.is_valid:
+            logger.debug("边界无效,尝试修复(buffer 0)")
             boundary = boundary.buffer(0)
         feedback.set_progress(30)
 
         # 2. 测区信息
+        logger.timing_start("calc_area")
         area = boundary.area
         bounds = boundary.bounds  # (minx, miny, maxx, maxy)
         width_m = bounds[2] - bounds[0]
         height_m = bounds[3] - bounds[1]
+        logger.timing_end("calc_area")
+        logger.debug(f"测区面积: {area:.1f} m², 范围: {width_m:.1f} x {height_m:.1f} m")
 
         feedback.push_info(f"测区面积: {area:.1f} m² ({area/1e6:.4f} km²)")
         feedback.push_info(f"测区范围: {width_m:.1f} x {height_m:.1f} m")
@@ -111,12 +130,16 @@ class A25SurveyAreaPlanning(Algorithm):
         # 3. 航高计算
         # H = GSD * f / pixel_size
         # f: 焦距(mm), pixel_size: 像元(μm), GSD: 米
+        logger.timing_start("calc_height")
         flight_height = gsd * focal_length / (pixel_size / 1000)
+        logger.timing_end("calc_height")
+        logger.debug(f"航高: {flight_height:.1f} m", gsd=gsd, focal_length=focal_length)
         feedback.push_info(f"航高: {flight_height:.1f} m")
         feedback.set_progress(50)
 
         # 4. 航线数和照片数
         # 地面覆盖范围
+        logger.timing_start("calc_coverage")
         ground_width = image_width * gsd  # 单张影像地面宽度
         ground_height = image_height * gsd  # 单张影像地面高度
 
@@ -130,6 +153,8 @@ class A25SurveyAreaPlanning(Algorithm):
         # 每条航线的照片数
         n_photos_per_line = int(np.ceil(width_m / exposure_spacing))
         total_photos = n_lines * n_photos_per_line
+        logger.timing_end("calc_coverage")
+        logger.debug(f"航线数: {n_lines}, 每线照片: {n_photos_per_line}, 总照片: {total_photos}")
 
         feedback.push_info(f"地面覆盖: {ground_width:.1f} x {ground_height:.1f} m")
         feedback.push_info(f"航线间距: {line_spacing:.1f} m, 曝光间距: {exposure_spacing:.1f} m")
@@ -171,15 +196,21 @@ class A25SurveyAreaPlanning(Algorithm):
 
         output_path = context.param("output_path",
                                      boundary_path.rsplit('.', 1)[0] + "_plan.json")
+        logger.debug(f"写入规划方案到: {output_path}")
+        logger.timing_start("write_output")
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(plan, f, ensure_ascii=False, indent=2)
+        logger.timing_end("write_output")
 
         feedback.set_progress(100)
         feedback.push_info(f"规划方案: {output_path}")
 
-        return AlgoResult(
+        result = AlgoResult(
             status=0,
             message=f"测区规划完成: {n_lines}航线, {total_photos}照片, 航高{flight_height:.0f}m",
             outputs=[output_path],
             metadata=plan
         )
+        logger.timing_end("total")
+        logger.info(f"完成 {self.display_name()}, status={result.status}")
+        return result

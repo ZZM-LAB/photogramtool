@@ -9,6 +9,9 @@
 import os
 import json
 from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedback, REGISTRY
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -70,21 +73,29 @@ class A33CompletenessCheck(Algorithm):
             input_data: 项目工作目录 (str)
         """
         work_dir = input_data
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
         if not work_dir or not os.path.isdir(work_dir):
+            logger.error(f"工作目录无效: {work_dir}")
+            logger.timing_end("total")
             return AlgoResult(status=1, message=f"工作目录无效: {work_dir}")
 
         output_report = context.param("output_report",
                                        os.path.join(work_dir, "completeness_report.json"))
+        logger.debug(f"输出报告路径: {output_report}")
 
         feedback.push_info(f"检查目录: {work_dir}")
         feedback.set_progress(10)
 
         # 扫描目录
+        logger.timing_start("scan_dir")
         all_files = []
         for root, dirs, files in os.walk(work_dir):
             for f in files:
                 rel = os.path.relpath(os.path.join(root, f), work_dir)
                 all_files.append(rel)
+        logger.timing_end("scan_dir")
+        logger.debug(f"扫描到文件数: {len(all_files)}")
 
         feedback.push_info(f"总文件数: {len(all_files)}")
         feedback.set_progress(30)
@@ -94,8 +105,10 @@ class A33CompletenessCheck(Algorithm):
         missing_items = []
         found_items = []
 
+        logger.timing_start("check_deliverables")
         for module, spec in self.EXPECTED_DELIVERABLES.items():
             feedback.set_progress_text(f"检查 {module}...")
+            logger.debug(f"检查模块: {module}")
             module_dir = os.path.join(work_dir, spec.get("dir", "."))
 
             # 检查指定文件
@@ -128,6 +141,9 @@ class A33CompletenessCheck(Algorithm):
                 (list(self.EXPECTED_DELIVERABLES.keys()).index(module) + 1) /
                 len(self.EXPECTED_DELIVERABLES) * 60
             ))
+
+        logger.timing_end("check_deliverables")
+        logger.debug(f"成果检查完成, found={len(found_items)}, missing={len(missing_items)}")
 
         # 评分
         total = len(results)
@@ -162,17 +178,24 @@ class A33CompletenessCheck(Algorithm):
             }
         }
 
+        logger.timing_start("write_report")
         with open(output_report, 'w', encoding='utf-8') as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
+        logger.timing_end("write_report")
+        logger.debug(f"报告已写入: {output_report}")
 
         feedback.set_progress(100)
         feedback.push_info(f"完整性: {found}/{total} ({completeness*100:.1f}%)")
         if missing_items:
+            logger.warning(f"缺失成果项: {', '.join(missing_items[:5])}")
             feedback.push_warning(f"缺失: {', '.join(missing_items[:5])}")
 
-        return AlgoResult(
+        logger.timing_end("total")
+        result = AlgoResult(
             status=0,
             message=f"完整性检查完成: {found}/{total} ({completeness*100:.1f}%)",
             outputs=[output_report],
             metadata=report["summary"]
         )
+        logger.info(f"完成 {self.display_name()}, status={result.status}")
+        return result

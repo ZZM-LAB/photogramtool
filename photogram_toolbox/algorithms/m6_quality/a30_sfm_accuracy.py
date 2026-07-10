@@ -10,6 +10,9 @@ import os
 import json
 import numpy as np
 from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedback, REGISTRY
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -51,23 +54,32 @@ class A30SfMAccuracyAssessment(Algorithm):
             input_data: 稀疏重建目录 (str, sparse/0)
         """
         sparse_dir = input_data
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
         if not sparse_dir or not os.path.isdir(sparse_dir):
+            logger.error(f"重建目录无效: {sparse_dir}")
+            logger.timing_end("total")
             return AlgoResult(status=1, message=f"重建目录无效: {sparse_dir}")
 
         output_report = context.param("output_report",
                                        os.path.join(sparse_dir, "sfm_accuracy_report.json"))
+        logger.debug(f"输出报告路径: {output_report}")
 
         import pycolmap
 
         # 1. 加载重建
         feedback.set_progress_text("加载重建结果...")
+        logger.timing_start("load_reconstruction")
         recon = pycolmap.Reconstruction(sparse_dir)
+        logger.timing_end("load_reconstruction")
         feedback.push_info(f"影像数: {len(recon.images)}")
         feedback.push_info(f"3D点数: {len(recon.points3D)}")
+        logger.debug(f"影像数: {len(recon.images)}, 3D点数: {len(recon.points3D)}")
         feedback.set_progress(30)
 
         # 2. 重投影误差统计
         feedback.set_progress_text("统计重投影误差...")
+        logger.timing_start("reprojection_error")
         errors = []
         point_errors = {}
 
@@ -85,6 +97,8 @@ class A30SfMAccuracyAssessment(Algorithm):
             p90_error = float(np.percentile(errors, 90))
         else:
             mean_error = median_error = std_error = max_error = p90_error = 0.0
+        logger.timing_end("reprojection_error")
+        logger.debug(f"重投影误差 mean={mean_error:.4f}, median={median_error:.4f}")
 
         feedback.push_info(f"平均重投影误差: {mean_error:.4f}px")
         feedback.push_info(f"中误差: {median_error:.4f}px")
@@ -92,6 +106,7 @@ class A30SfMAccuracyAssessment(Algorithm):
 
         # 3. 3D点分布分析
         feedback.set_progress_text("分析3D点分布...")
+        logger.timing_start("point_distribution")
         points = []
         for pt_id, point3d in recon.points3D.items():
             xyz = point3d.xyz
@@ -115,11 +130,14 @@ class A30SfMAccuracyAssessment(Algorithm):
             bounds_min = bounds_max = extent = np.zeros(3)
             density = 0
             centroid = np.zeros(3)
+        logger.timing_end("point_distribution")
+        logger.debug(f"3D点分布 density={density}")
 
         feedback.set_progress(70)
 
         # 4. 相机姿态分析
         feedback.set_progress_text("分析相机姿态...")
+        logger.timing_start("camera_pose")
         camera_positions = []
         for img_id, img in recon.images.items():
             # 相机位置 = -R^T * t
@@ -139,6 +157,8 @@ class A30SfMAccuracyAssessment(Algorithm):
             max_baseline = float(np.max(dists))
         else:
             avg_baseline = min_baseline = max_baseline = 0.0
+        logger.timing_end("camera_pose")
+        logger.debug(f"相机基线 avg={avg_baseline}")
 
         feedback.set_progress(90)
 
@@ -178,15 +198,21 @@ class A30SfMAccuracyAssessment(Algorithm):
             "accuracy_score": accuracy_score,
         }
 
+        logger.timing_start("write_report")
         with open(output_report, 'w', encoding='utf-8') as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
+        logger.timing_end("write_report")
+        logger.debug(f"报告已写入: {output_report}")
 
         feedback.set_progress(100)
         feedback.push_info(f"精度评分: {accuracy_score}/100")
 
-        return AlgoResult(
+        logger.timing_end("total")
+        result = AlgoResult(
             status=0,
             message=f"空三精度评定完成, 平均误差 {mean_error:.4f}px, 评分 {accuracy_score}/100",
             outputs=[output_report],
             metadata=report
         )
+        logger.info(f"完成 {self.display_name()}, status={result.status}")
+        return result

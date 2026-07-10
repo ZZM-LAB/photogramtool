@@ -10,6 +10,9 @@ import os
 import json
 import numpy as np
 from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedback, REGISTRY
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -50,8 +53,13 @@ class A24DLGAccuracy(Algorithm):
         Args:
             input_data: 待评估的分割图路径 (str, .tif)
         """
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
         seg_path = input_data
         if not seg_path or not os.path.exists(seg_path):
+            logger.error(f"分割图无效: {seg_path}")
+            logger.timing_end("total")
+            logger.info(f"完成 {self.display_name()}, status=1")
             return AlgoResult(status=1, message=f"分割图无效: {seg_path}")
 
         ref_path = context.param("ref_path", "")
@@ -65,11 +73,15 @@ class A24DLGAccuracy(Algorithm):
         from shapely.geometry import shape as shp_shape
 
         # 1. 读取分割结果
+        logger.debug("开始读取分割结果")
+        logger.timing_start("read_seg")
         feedback.set_progress_text("读取分割结果...")
         with rasterio.open(seg_path) as src:
             seg = src.read(1)
         feedback.push_info(f"分割图尺寸: {seg.shape}")
         feedback.set_progress(30)
+        logger.timing_end("read_seg")
+        logger.debug(f"分割结果读取完成, 尺寸={seg.shape}")
 
         classes = np.unique(seg)
         classes = classes[classes >= 0]
@@ -77,6 +89,8 @@ class A24DLGAccuracy(Algorithm):
 
         # 2. 如果有参考数据,计算指标
         if ref_path and os.path.exists(ref_path):
+            logger.debug("开始读取参考数据")
+            logger.timing_start("read_ref")
             feedback.set_progress_text("读取参考数据...")
 
             if ref_path.endswith('.tif'):
@@ -102,14 +116,24 @@ class A24DLGAccuracy(Algorithm):
                     fill=0
                 ).astype(np.uint8)
             else:
+                logger.error(f"不支持的参考格式: {ref_path}")
+                logger.timing_end("total")
+                logger.info(f"完成 {self.display_name()}, status=1")
                 return AlgoResult(status=1, message=f"不支持的参考格式: {ref_path}")
 
             feedback.set_progress(50)
+            logger.timing_end("read_ref")
+            logger.debug(f"参考数据读取完成, 尺寸={ref.shape}")
 
             if ref.shape != seg.shape:
+                logger.error(f"尺寸不匹配: seg={seg.shape}, ref={ref.shape}")
+                logger.timing_end("total")
+                logger.info(f"完成 {self.display_name()}, status=1")
                 return AlgoResult(status=1, message="分割图与参考图尺寸不匹配")
 
             # 3. 计算混淆矩阵
+            logger.debug("开始计算精度指标")
+            logger.timing_start("metrics")
             feedback.set_progress_text("计算精度指标...")
             conf_matrix = np.zeros((n_classes, n_classes), dtype=int)
             for i, ci in enumerate(classes):
@@ -149,8 +173,11 @@ class A24DLGAccuracy(Algorithm):
                 "classes": [int(c) for c in classes],
                 "per_class": metrics,
             }
+            logger.timing_end("metrics")
+            logger.debug(f"精度指标计算完成, OA={oa:.4f}, mIoU={mean_iou:.4f}")
         else:
             # 无参考数据,输出统计信息
+            logger.debug("未提供参考数据,仅输出统计信息")
             feedback.push_warning("未提供参考数据,仅输出统计信息")
             feedback.set_progress(60)
 
@@ -171,9 +198,13 @@ class A24DLGAccuracy(Algorithm):
             }
 
         # 4. 输出报告
+        logger.debug("开始生成报告")
+        logger.timing_start("save")
         feedback.set_progress_text("生成报告...")
         with open(output_report, 'w', encoding='utf-8') as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
+        logger.timing_end("save")
+        logger.debug(f"报告已保存: {output_report}")
 
         feedback.set_progress(100)
         if result.get("mean_iou") is not None:
@@ -182,10 +213,13 @@ class A24DLGAccuracy(Algorithm):
             for c, m in result["per_class"].items():
                 feedback.push_info(f"  类别{c}: IoU={m['iou']:.4f}, F1={m['f1']:.4f}")
 
-        return AlgoResult(
+        algo_result = AlgoResult(
             status=0,
             message=f"精度评定完成" + (f", mIoU={result['mean_iou']:.4f}"
                                       if result.get("mean_iou") else ""),
             outputs=[output_report],
             metadata=result
         )
+        logger.timing_end("total")
+        logger.info(f"完成 {self.display_name()}, status={algo_result.status}")
+        return algo_result

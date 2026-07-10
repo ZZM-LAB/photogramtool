@@ -11,6 +11,9 @@
 import os
 import numpy as np
 from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedback, REGISTRY
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -52,8 +55,13 @@ class A16SeamlineOptimization(Algorithm):
         Args:
             input_data: 正射影像目录 (str)
         """
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
+
         ortho_dir = input_data
         if not ortho_dir or not os.path.isdir(ortho_dir):
+            logger.error(f"目录无效: {ortho_dir}")
+            logger.timing_end("total")
             return AlgoResult(status=1, message=f"目录无效: {ortho_dir}")
 
         output_dir = context.param("output_dir",
@@ -65,53 +73,72 @@ class A16SeamlineOptimization(Algorithm):
         import json
 
         # 1. 扫描正射影像
+        logger.debug("开始扫描正射影像", ortho_dir=ortho_dir)
         ortho_files = sorted([f for f in os.listdir(ortho_dir)
                               if f.endswith('_ortho.tif')])
         if len(ortho_files) < 2:
+            logger.error(f"至少需要2张正射影像,当前: {len(ortho_files)}")
+            logger.timing_end("total")
             return AlgoResult(status=1, message="至少需要2张正射影像")
 
         feedback.push_info(f"正射影像数: {len(ortho_files)}")
+        logger.debug(f"扫描到正射影像数: {len(ortho_files)}, 待优化对数: {len(ortho_files) - 1}")
         feedback.set_progress(20)
 
         # 2. 逐对优化相邻影像的接缝线
         optimized_seams = []
         total_pairs = len(ortho_files) - 1
+        logger.debug(f"开始逐对优化, 共 {total_pairs} 对")
+        logger.timing_start("optimize_all")
 
         for i in range(total_pairs):
             if feedback.is_canceled():
+                logger.error("用户取消(接缝线优化循环)")
+                logger.timing_end("optimize_all")
+                logger.timing_end("total")
                 return AlgoResult(status=2, message="用户取消")
 
             img1_path = os.path.join(ortho_dir, ortho_files[i])
             img2_path = os.path.join(ortho_dir, ortho_files[i + 1])
 
             feedback.set_progress_text(f"优化接缝线 {i+1}/{total_pairs}: {ortho_files[i]} ↔ {ortho_files[i+1]}")
+            logger.debug(f"优化接缝线 ({i+1}/{total_pairs}): {ortho_files[i]} ↔ {ortho_files[i+1]}")
 
             # 读取影像
+            logger.timing_start(f"read_pair_{i}")
             with rasterio.open(img1_path) as src1:
                 img1 = src1.read()
                 transform1 = src1.transform
             with rasterio.open(img2_path) as src2:
                 img2 = src2.read()
+            logger.timing_end(f"read_pair_{i}")
 
             # 检查尺寸
             if img1.shape != img2.shape:
                 feedback.push_warning(f"影像尺寸不匹配,跳过: {ortho_files[i]}")
+                logger.debug(f"影像尺寸不匹配,跳过: {ortho_files[i]} (shape1={img1.shape}, shape2={img2.shape})")
                 continue
 
             # 计算重叠区差异
+            logger.timing_start(f"diff_{i}")
             valid1 = np.any(img1 > 0, axis=0)
             valid2 = np.any(img2 > 0, axis=0)
             overlap = valid1 & valid2
 
             if not np.any(overlap):
+                logger.timing_end(f"diff_{i}")
+                logger.debug(f"无重叠区,跳过对: {i}")
                 continue
 
             # 差异图
             diff = np.mean(np.abs(img1.astype(float) - img2.astype(float)), axis=0)
             diff[~overlap] = 1e6  # 非重叠区设大值
+            logger.timing_end(f"diff_{i}")
+            logger.debug(f"差异图计算完成: shape={diff.shape}")
 
             # 用动态规划求最优接缝(垂直方向)
             # cost[i,j] = diff[i,j] + min(cost[i-1,j-1], cost[i-1,j], cost[i-1,j+1])
+            logger.timing_start(f"dp_{i}")
             rows, cols = diff.shape
             cost = diff.copy()
             backtrack = np.zeros_like(cost, dtype=int)
@@ -142,6 +169,8 @@ class A16SeamlineOptimization(Algorithm):
             for r in range(rows - 2, -1, -1):
                 seam[r] = seam[r+1] + backtrack[r+1, seam[r+1]]
                 seam[r] = max(0, min(cols - 1, seam[r]))
+            logger.timing_end(f"dp_{i}")
+            logger.debug(f"动态规划与回溯完成: seam长度={len(seam)}")
 
             # 转为地理坐标
             coords = []
@@ -160,16 +189,23 @@ class A16SeamlineOptimization(Algorithm):
 
             feedback.set_progress(20 + int((i + 1) / total_pairs * 70))
 
+        logger.timing_end("optimize_all")
+        logger.debug(f"逐对优化完成, 共生成 {len(optimized_seams)} 条接缝线")
+
         # 3. 输出
         output_geojson = os.path.join(output_dir, "optimized_seams.geojson")
+        logger.debug("开始输出优化接缝线GeoJSON", output_geojson=output_geojson)
+        logger.timing_start("write_geojson")
         with open(output_geojson, 'w', encoding='utf-8') as f:
             json.dump({"type": "FeatureCollection", "features": optimized_seams}, f,
                       ensure_ascii=False)
+        logger.timing_end("write_geojson")
+        logger.debug(f"GeoJSON已写入: {output_geojson}")
 
         feedback.set_progress(100)
         feedback.push_info(f"优化完成: {len(optimized_seams)} 条接缝线")
 
-        return AlgoResult(
+        result = AlgoResult(
             status=0,
             message=f"接缝线优化完成, {len(optimized_seams)} 条",
             outputs=[output_geojson],
@@ -178,3 +214,6 @@ class A16SeamlineOptimization(Algorithm):
                 "seam_count": len(optimized_seams),
             }
         )
+        logger.timing_end("total")
+        logger.info(f"完成 {self.display_name()}, status={result.status}")
+        return result

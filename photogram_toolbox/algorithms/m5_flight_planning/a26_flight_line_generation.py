@@ -10,6 +10,9 @@ import os
 import json
 import numpy as np
 from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedback, REGISTRY
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -46,8 +49,13 @@ class A26FlightLineGeneration(Algorithm):
         Args:
             input_data: 规划方案JSON (str)
         """
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
+
         plan_path = input_data
         if not plan_path or not os.path.exists(plan_path):
+            logger.error(f"规划文件无效: {plan_path}")
+            logger.timing_end("total")
             return AlgoResult(status=1, message=f"规划文件无效: {plan_path}")
 
         output_geojson = context.param("output_geojson",
@@ -55,8 +63,11 @@ class A26FlightLineGeneration(Algorithm):
 
         # 1. 读取规划
         feedback.set_progress_text("读取规划方案...")
+        logger.debug("读取规划方案", plan_path=plan_path)
+        logger.timing_start("read_plan")
         with open(plan_path, 'r', encoding='utf-8') as f:
             plan = json.load(f)
+        logger.timing_end("read_plan")
         feedback.set_progress(20)
 
         bounds = plan["survey_area"]["bounds"]
@@ -69,9 +80,11 @@ class A26FlightLineGeneration(Algorithm):
         exposure_spacing = coverage["exposure_spacing_m"]
         n_lines = estimate["flight_lines"]
         n_photos = estimate["photos_per_line"]
+        logger.debug(f"规划参数: n_lines={n_lines}, n_photos={n_photos}, line_spacing={line_spacing:.1f}, exposure_spacing={exposure_spacing:.1f}")
 
         # 2. 生成航线
         feedback.set_progress_text("生成航线和曝光点...")
+        logger.timing_start("gen_lines")
         features = []
 
         for line_idx in range(n_lines):
@@ -128,6 +141,8 @@ class A26FlightLineGeneration(Algorithm):
 
         # 3. 输出
         feedback.set_progress_text("保存航线...")
+        logger.timing_end("gen_lines")
+        logger.debug(f"生成要素数: {len(features)}")
         geojson = {
             "type": "FeatureCollection",
             "features": features,
@@ -137,13 +152,16 @@ class A26FlightLineGeneration(Algorithm):
                 "flight_height": flight_height,
             }
         }
+        logger.debug(f"写入航线GeoJSON: {output_geojson}")
+        logger.timing_start("write_output")
         with open(output_geojson, 'w', encoding='utf-8') as f:
             json.dump(geojson, f, ensure_ascii=False)
+        logger.timing_end("write_output")
 
         feedback.set_progress(100)
         feedback.push_info(f"航线生成: {n_lines}条, {len(features)}个要素")
 
-        return AlgoResult(
+        result = AlgoResult(
             status=0,
             message=f"航线生成完成: {n_lines}条航线, {n_lines * n_photos}个曝光点",
             outputs=[output_geojson],
@@ -153,3 +171,6 @@ class A26FlightLineGeneration(Algorithm):
                 "total_photos": n_lines * n_photos,
             }
         )
+        logger.timing_end("total")
+        logger.info(f"完成 {self.display_name()}, status={result.status}")
+        return result

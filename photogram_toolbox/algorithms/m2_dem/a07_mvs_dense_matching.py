@@ -9,6 +9,9 @@
 import os
 from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedback, REGISTRY
 from photogram_toolbox.core.colmap_cli import patch_match_stereo, stereo_fusion
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -50,40 +53,66 @@ class A07MVSDenseMatching(Algorithm):
         Args:
             input_data: dense 工作目录 (str, A06 undistort_images 的输出)
         """
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
+
         dense_dir = input_data
         if not dense_dir or not os.path.isdir(dense_dir):
-            return AlgoResult(status=1, message=f"工作目录无效: {dense_dir}")
+            logger.error(f"工作目录无效: {dense_dir}")
+            result = AlgoResult(status=1, message=f"工作目录无效: {dense_dir}")
+            logger.timing_end("total")
+            logger.info(f"完成 {self.display_name()}, status={result.status}")
+            return result
 
         output_ply = context.param("output_ply",
                                     os.path.join(dense_dir, "fused.ply"))
 
         feedback.push_info(f"输入目录: {dense_dir}")
         feedback.push_info(f"输出点云: {output_ply}")
+        logger.debug(f"参数: dense_dir={dense_dir}, output_ply={output_ply}")
 
         # 1. Patch Match Stereo (生成深度图)
         feedback.set_progress_text("执行 Patch Match Stereo 稠密匹配...")
         feedback.set_progress(20)
+        logger.timing_start("patch_match_stereo")
         try:
             patch_match_stereo(dense_dir)
         except RuntimeError as e:
-            return AlgoResult(status=1, message=f"MVS匹配失败: {e}")
+            logger.error(f"MVS匹配失败: {e}")
+            result = AlgoResult(status=1, message=f"MVS匹配失败: {e}")
+            logger.timing_end("total")
+            logger.info(f"完成 {self.display_name()}, status={result.status}")
+            return result
+        logger.timing_end("patch_match_stereo")
         feedback.set_progress(60)
         feedback.push_info("深度图生成完成")
+        logger.debug("深度图生成完成")
 
         # 2. Stereo Fusion (融合为点云)
         feedback.set_progress_text("融合深度图为稠密点云...")
+        logger.timing_start("stereo_fusion")
         try:
             stereo_fusion(dense_dir, output_ply)
         except RuntimeError as e:
-            return AlgoResult(status=1, message=f"点云融合失败: {e}")
+            logger.error(f"点云融合失败: {e}")
+            result = AlgoResult(status=1, message=f"点云融合失败: {e}")
+            logger.timing_end("total")
+            logger.info(f"完成 {self.display_name()}, status={result.status}")
+            return result
+        logger.timing_end("stereo_fusion")
 
         if not os.path.exists(output_ply):
-            return AlgoResult(status=1, message="融合失败,未生成点云文件")
+            logger.error(f"融合失败,未生成点云文件: {output_ply}")
+            result = AlgoResult(status=1, message="融合失败,未生成点云文件")
+            logger.timing_end("total")
+            logger.info(f"完成 {self.display_name()}, status={result.status}")
+            return result
 
         feedback.set_progress(100)
         feedback.push_info(f"稠密点云生成完成: {output_ply}")
+        logger.debug(f"稠密点云生成完成: {output_ply}")
 
-        return AlgoResult(
+        result = AlgoResult(
             status=0,
             message="MVS稠密匹配完成",
             outputs=[output_ply],
@@ -92,3 +121,6 @@ class A07MVSDenseMatching(Algorithm):
                 "pointcloud": output_ply,
             }
         )
+        logger.timing_end("total")
+        logger.info(f"完成 {self.display_name()}, status={result.status}")
+        return result

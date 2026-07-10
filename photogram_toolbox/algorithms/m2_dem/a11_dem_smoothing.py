@@ -8,6 +8,9 @@
 import os
 import numpy as np
 from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedback, REGISTRY
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -49,9 +52,16 @@ class A11DEMSmoothing(Algorithm):
         Args:
             input_data: 输入DEM路径 (str, .tif)
         """
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
+
         input_dem = input_data
         if not input_dem or not os.path.exists(input_dem):
-            return AlgoResult(status=1, message=f"DEM文件无效: {input_dem}")
+            logger.error(f"DEM文件无效: {input_dem}")
+            result = AlgoResult(status=1, message=f"DEM文件无效: {input_dem}")
+            logger.timing_end("total")
+            logger.info(f"完成 {self.display_name()}, status={result.status}")
+            return result
 
         output_dem = context.param("output_dem",
                                     input_dem.replace(".tif", "_smoothed.tif"))
@@ -59,6 +69,7 @@ class A11DEMSmoothing(Algorithm):
 
         feedback.push_info(f"输入: {input_dem}")
         feedback.push_info(f"滤波窗口: {filter_size}x{filter_size}")
+        logger.debug(f"参数: filter_size={filter_size}, output_dem={output_dem}")
 
         import rasterio
         from scipy.ndimage import median_filter, binary_dilation
@@ -66,33 +77,40 @@ class A11DEMSmoothing(Algorithm):
 
         # 1. 读取DEM
         feedback.set_progress_text("读取DEM...")
+        logger.timing_start("read_dem")
         with rasterio.open(input_dem) as src:
             dem = src.read(1)
             profile = src.profile
             transform = src.transform
             nodata = src.nodata
+        logger.timing_end("read_dem")
         feedback.push_info(f"DEM尺寸: {dem.shape}")
+        logger.debug(f"DEM尺寸: {dem.shape}")
         feedback.set_progress(20)
 
         # 标记孔洞
         valid = ~np.isnan(dem) if nodata is None or np.isnan(nodata) else (dem != nodata)
         hole_count = np.sum(~valid)
         feedback.push_info(f"孔洞像素: {hole_count} ({hole_count/dem.size*100:.1f}%)")
+        logger.debug(f"孔洞像素: {hole_count} ({hole_count/dem.size*100:.1f}%)")
         feedback.set_progress(30)
 
         # 2. 中值滤波(仅对有效像素)
         feedback.set_progress_text("中值滤波...")
+        logger.timing_start("median_filter")
         dem_filtered = dem.copy()
         if np.any(valid):
             temp = dem.copy()
             temp[~valid] = np.nanmedian(dem[valid]) if np.any(valid) else 0
             dem_filtered = median_filter(temp, size=filter_size)
             dem_filtered[~valid] = np.nan  # 恢复孔洞
+        logger.timing_end("median_filter")
         feedback.set_progress(50)
 
         # 3. 孔洞填充
         if hole_count > 0:
             feedback.set_progress_text("填充孔洞...")
+            logger.timing_start("fill_holes")
             ys, xs = np.where(valid)
             zs = dem_filtered[valid]
             tree = cKDTree(np.column_stack([xs, ys]))
@@ -106,18 +124,22 @@ class A11DEMSmoothing(Algorithm):
                 weights = 1.0 / np.maximum(dist, 1e-10)**2
                 filled = np.sum(weights * zs[idx], axis=1) / np.sum(weights, axis=1)
                 dem_filtered[hole_ys, hole_xs] = filled
+            logger.timing_end("fill_holes")
         feedback.set_progress(80)
 
         # 4. 保存
         feedback.set_progress_text("保存结果...")
+        logger.timing_start("save_dem")
         profile.update(dtype='float32', nodata=np.nan)
         with rasterio.open(output_dem, 'w', **profile) as dst:
             dst.write(dem_filtered.astype('float32'), 1)
+        logger.timing_end("save_dem")
 
         feedback.set_progress(100)
         feedback.push_info(f"平滑完成: {output_dem}")
+        logger.debug(f"平滑完成: {output_dem}, 填充孔洞 {hole_count}")
 
-        return AlgoResult(
+        result = AlgoResult(
             status=0,
             message=f"DEM平滑完成,填充 {hole_count} 个孔洞",
             outputs=[output_dem],
@@ -127,3 +149,6 @@ class A11DEMSmoothing(Algorithm):
                 "hole_count": int(hole_count),
             }
         )
+        logger.timing_end("total")
+        logger.info(f"完成 {self.display_name()}, status={result.status}")
+        return result

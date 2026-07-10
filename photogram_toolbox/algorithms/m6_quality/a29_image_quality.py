@@ -10,6 +10,9 @@ import os
 import json
 import numpy as np
 from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedback, REGISTRY
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -50,18 +53,24 @@ class A29ImageQualityAssessment(Algorithm):
         Args:
             input_data: 影像目录 (str) 或单张影像路径
         """
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
         input_path = input_data
         if not input_path or not os.path.exists(input_path):
+            logger.error(f"路径无效: {input_path}")
+            logger.timing_end("total")
             return AlgoResult(status=1, message=f"路径无效: {input_path}")
 
         output_report = context.param("output_report",
                                        os.path.join(
                                            input_path if os.path.isdir(input_path) else os.path.dirname(input_path),
                                            "image_quality_report.json"))
+        logger.debug(f"输出报告路径: {output_report}")
 
         import cv2
 
         # 收集影像
+        logger.timing_start("collect_images")
         if os.path.isdir(input_path):
             exts = ('.jpg', '.jpeg', '.png', '.tif', '.tiff')
             image_files = [os.path.join(input_path, f)
@@ -69,18 +78,27 @@ class A29ImageQualityAssessment(Algorithm):
                            if f.lower().endswith(exts)]
         else:
             image_files = [input_path]
+        logger.timing_end("collect_images")
+        logger.debug(f"收集到影像数: {len(image_files)}")
 
         if not image_files:
+            logger.error("未找到影像文件")
+            logger.timing_end("total")
             return AlgoResult(status=1, message="未找到影像文件")
 
         feedback.push_info(f"影像数: {len(image_files)}")
         feedback.set_progress(10)
 
         results = []
+        logger.timing_start("process_images")
         for i, img_path in enumerate(image_files):
             if feedback.is_canceled():
+                logger.warning("用户取消执行")
+                logger.timing_end("process_images")
+                logger.timing_end("total")
                 return AlgoResult(status=2, message="用户取消")
 
+            logger.debug(f"处理影像 ({i+1}/{len(image_files)}): {img_path}")
             # 读取影像
             img = cv2.imread(img_path)
             if img is None:
@@ -91,7 +109,8 @@ class A29ImageQualityAssessment(Algorithm):
                         data = src.read()
                     img = np.transpose(data[:3], (1, 2, 0))
                     img = img[:, :, ::-1]  # RGB → BGR
-                except Exception:
+                except Exception as e:
+                    logger.error(f"影像读取失败: {img_path}, 错误: {e}")
                     results.append({"file": os.path.basename(img_path), "error": "读取失败"})
                     continue
 
@@ -149,7 +168,10 @@ class A29ImageQualityAssessment(Algorithm):
             feedback.set_progress(10 + int((i + 1) / len(image_files) * 85))
 
         # 汇总
+        logger.timing_end("process_images")
         if not results:
+            logger.error("无有效影像")
+            logger.timing_end("total")
             return AlgoResult(status=1, message="无有效影像")
 
         valid = [r for r in results if "error" not in r]
@@ -167,15 +189,19 @@ class A29ImageQualityAssessment(Algorithm):
             "images": results,
         }
 
+        logger.timing_start("write_report")
         with open(output_report, 'w', encoding='utf-8') as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
+        logger.timing_end("write_report")
+        logger.debug(f"报告已写入: {output_report}")
 
         feedback.set_progress(100)
         feedback.push_info(f"平均清晰度: {avg_sharpness:.1f}")
         feedback.push_info(f"平均亮度: {avg_brightness:.1f}")
         feedback.push_info(f"平均评分: {avg_score:.1f}/100")
 
-        return AlgoResult(
+        logger.timing_end("total")
+        result = AlgoResult(
             status=0,
             message=f"影像质量评定完成({len(valid)}张), 平均评分 {avg_score:.1f}/100",
             outputs=[output_report],
@@ -185,3 +211,5 @@ class A29ImageQualityAssessment(Algorithm):
                 "avg_score": float(avg_score),
             }
         )
+        logger.info(f"完成 {self.display_name()}, status={result.status}")
+        return result

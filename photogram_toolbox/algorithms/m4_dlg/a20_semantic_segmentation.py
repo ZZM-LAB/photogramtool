@@ -9,6 +9,9 @@
 import os
 import numpy as np
 from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedback, REGISTRY
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -49,8 +52,13 @@ class A20SemanticSegmentation(Algorithm):
         Args:
             input_data: DOM影像路径 (str, .tif)
         """
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
         dom_path = input_data
         if not dom_path or not os.path.exists(dom_path):
+            logger.error(f"DOM文件无效: {dom_path}")
+            logger.timing_end("total")
+            logger.info(f"完成 {self.display_name()}, status=1")
             return AlgoResult(status=1, message=f"DOM文件无效: {dom_path}")
 
         output_path = context.param("output_path",
@@ -119,30 +127,45 @@ class A20SemanticSegmentation(Algorithm):
                 return self.out_conv(d1)
 
         # 2. 加载模型
+        logger.debug("开始加载模型")
+        logger.timing_start("load_model")
         feedback.set_progress_text("加载模型...")
         model = UNet(in_channels=3, n_classes=n_classes).to(device)
         if model_path and os.path.exists(model_path):
             model.load_state_dict(torch.load(model_path, map_location=device))
             feedback.push_info("预训练权重加载完成")
+            logger.debug(f"预训练权重加载完成: {model_path}")
         else:
             feedback.push_warning("未加载预训练权重,输出为随机推理结果")
+            logger.debug("未加载预训练权重,使用随机初始化")
         model.eval()
         feedback.set_progress(30)
+        logger.timing_end("load_model")
+        logger.debug(f"模型加载完成, device={device}")
 
         # 3. 读取影像
+        logger.debug("开始读取影像")
+        logger.timing_start("read_image")
         feedback.set_progress_text("读取影像...")
         with rasterio.open(dom_path) as src:
             dom = src.read()
             profile = src.profile
+        logger.timing_end("read_image")
+        logger.debug(f"影像读取完成, 尺寸={dom.shape}")
 
         bands, rows, cols = dom.shape
         if bands < 3:
+            logger.error(f"影像波段数不足: {bands}, 至少需要3波段")
+            logger.timing_end("total")
+            logger.info(f"完成 {self.display_name()}, status=1")
             return AlgoResult(status=1, message="影像至少需要3波段")
 
         rgb = np.transpose(dom[:3], (1, 2, 0)).astype(np.float32) / 255.0
         feedback.set_progress(40)
 
         # 4. 分块推理
+        logger.debug(f"开始分块推理, tile_size={tile_size}")
+        logger.timing_start("inference")
         feedback.set_progress_text(f"分块推理 (tile={tile_size})...")
         result = np.zeros((rows, cols), dtype=np.uint8)
 
@@ -179,17 +202,24 @@ class A20SemanticSegmentation(Algorithm):
                     done = ty * tiles_x + tx + 1
                     feedback.set_progress(40 + int(done / total_tiles * 55))
 
+        logger.timing_end("inference")
+        logger.debug(f"分块推理完成, tiles={total_tiles}")
+
         # 5. 保存
+        logger.debug("开始保存分割结果")
+        logger.timing_start("save")
         feedback.set_progress_text("保存分割结果...")
         out_profile = profile.copy()
         out_profile.update(dtype='uint8', count=1)
         with rasterio.open(output_path, 'w', **out_profile) as dst:
             dst.write(result, 1)
+        logger.timing_end("save")
+        logger.debug(f"分割结果已保存: {output_path}")
 
         feedback.set_progress(100)
         feedback.push_info(f"分割完成: {output_path}")
 
-        return AlgoResult(
+        algo_result = AlgoResult(
             status=0,
             message=f"语义分割完成 (device={device}, tiles={total_tiles})",
             outputs=[output_path],
@@ -201,3 +231,6 @@ class A20SemanticSegmentation(Algorithm):
                 "model_loaded": bool(model_path and os.path.exists(model_path)),
             }
         )
+        logger.timing_end("total")
+        logger.info(f"完成 {self.display_name()}, status={algo_result.status}")
+        return algo_result

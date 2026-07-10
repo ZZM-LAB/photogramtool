@@ -4,7 +4,15 @@
     python -m photogram_toolbox.main        # 启动 GUI
     python -m photogram_toolbox.main --list  # 列出所有算法
 """
+import os
 import sys
+
+
+def _init_logging():
+    """初始化日志系统"""
+    from photogram_toolbox.core.logger import setup_logging
+    log_dir = os.path.join(os.path.dirname(__file__), "..", "logs")
+    setup_logging(log_dir=log_dir)
 
 
 def list_algorithms():
@@ -40,6 +48,7 @@ def launch_gui():
 
 
 def main():
+    _init_logging()
     if "--list" in sys.argv:
         list_algorithms()
     else:

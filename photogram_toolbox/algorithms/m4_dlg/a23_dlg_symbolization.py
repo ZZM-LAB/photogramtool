@@ -9,6 +9,9 @@ import os
 import json
 import numpy as np
 from photogram_toolbox.core import Algorithm, AlgoResult, AlgoContext, AlgoFeedback, REGISTRY
+from photogram_toolbox.core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @REGISTRY.register
@@ -60,8 +63,13 @@ class A23DLGSymbolization(Algorithm):
         Args:
             input_data: GeoJSON路径 (str)
         """
+        logger.info(f"开始执行 {self.display_name()}, input={input_data}")
+        logger.timing_start("total")
         geojson_path = input_data
         if not geojson_path or not os.path.exists(geojson_path):
+            logger.error(f"GeoJSON无效: {geojson_path}")
+            logger.timing_end("total")
+            logger.info(f"完成 {self.display_name()}, status=1")
             return AlgoResult(status=1, message=f"GeoJSON无效: {geojson_path}")
 
         output_png = context.param("output_png",
@@ -78,6 +86,8 @@ class A23DLGSymbolization(Algorithm):
         from shapely.geometry import shape as shp_shape
 
         # 1. 读取
+        logger.debug("开始读取矢量数据")
+        logger.timing_start("read")
         feedback.set_progress_text("读取矢量数据...")
         with open(geojson_path, 'r', encoding='utf-8') as f:
             geojson = json.load(f)
@@ -85,8 +95,12 @@ class A23DLGSymbolization(Algorithm):
         features = geojson["features"]
         feedback.push_info(f"要素数: {len(features)}")
         feedback.set_progress(20)
+        logger.timing_end("read")
+        logger.debug(f"矢量数据读取完成, 要素数={len(features)}")
 
         # 2. 按类别分组
+        logger.debug("开始符号化渲染")
+        logger.timing_start("render")
         feedback.set_progress_text("符号化渲染...")
         fig, ax = plt.subplots(1, 1, figsize=(12, 12))
 
@@ -111,6 +125,8 @@ class A23DLGSymbolization(Algorithm):
                             linestyle=symbol.get("linestyle", "-"))
 
         feedback.set_progress(60)
+        logger.timing_end("render")
+        logger.debug("符号化渲染完成")
 
         # 3. 图例
         legend_handles = []
@@ -132,15 +148,19 @@ class A23DLGSymbolization(Algorithm):
         feedback.set_progress(80)
 
         # 4. 保存
+        logger.debug("开始保存地图")
+        logger.timing_start("save")
         feedback.set_progress_text("保存地图...")
         plt.tight_layout()
         plt.savefig(output_png, dpi=dpi, bbox_inches='tight')
         plt.close()
+        logger.timing_end("save")
+        logger.debug(f"地图已保存: {output_png}")
 
         feedback.set_progress(100)
         feedback.push_info(f"地图保存: {output_png}")
 
-        return AlgoResult(
+        result = AlgoResult(
             status=0,
             message=f"DLG符号化完成",
             outputs=[output_png],
@@ -150,3 +170,6 @@ class A23DLGSymbolization(Algorithm):
                 "dpi": dpi,
             }
         )
+        logger.timing_end("total")
+        logger.info(f"完成 {self.display_name()}, status={result.status}")
+        return result
