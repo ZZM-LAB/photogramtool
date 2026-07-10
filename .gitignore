@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
+# Data (不提交测试数据)
+photogrammetrydata/
+
+# Logs
+*.log
+logs/
+
+# Build artifacts
+*.pyc
+*.pyo
+*.pyd
+*.dll
+*.so
+*.dylib
+
+# CMake (旧项目残留)
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+
+# 外部工具二进制 (不提交,单独下载)
+OpenMVS_Windows_x64_CUDA/
+OpenMVS_Windows_x64_CUDA.7z
+*.7z
+
+# 学习资料 (参考资料,不提交)
+学习资料/
+进阶阶段学习资料/

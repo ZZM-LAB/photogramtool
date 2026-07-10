@@ -1,0 +1,191 @@
+# 摄影测量工具箱技术栈清单
+# 项目: photogram_toolbox
+# 目标: Python 实现 38 个摄影测量算法 + 可运行桌面软件
+# 环境: Anaconda gisenv (Python 3.11)
+# 生成日期: 2026-07-11
+
+============================================================
+【运行环境】
+============================================================
+Anaconda 环境: gisenv (Python 3.11.x)
+激活: conda activate gisenv
+
+============================================================
+【一、Python 依赖（pip 安装）】
+============================================================
+
+[GUI 框架]
+PyQt5>=5.15                    # 桌面界面（conda-forge 已装）
+
+[科学计算]
+numpy>=1.26                    # 数组运算（已装）
+scipy>=1.11                    # 插值/优化/滤波（已装）
+scikit-learn>=1.3              # 分类/聚类（已装）
+matplotlib>=3.7                # 图表/报告（已装）
+
+[栅格/图像 I/O]
+opencv-python>=4.8             # 图像处理，A02/A14（已装）
+rasterio>=1.3                  # 栅格读写，DEM/DOM 输出
+
+[深度学习 - A20 语义分割]
+# 单独安装 CUDA 12.8 版本:
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+torch>=2.2                     # GPU 推理（待装 cu128）
+torchvision>=0.17              # 预训练模型（待装 cu128）
+
+[三维点云/网格 - A07-A09, A34-A38]
+open3d>=0.18                   # 点云处理/Poisson重建（已装）
+
+[SfM Python 绑定 - A01-A06]
+pycolmap>=0.6                  # COLMAP 的 Python 接口（待装）
+
+[CSF 布料模拟滤波 - A09]
+csf-py>=0.1                    # 地面点滤波（待装）
+
+============================================================
+【二、外部命令行工具（预编译二进制，不通过 pip）】
+============================================================
+
+[COLMAP - SfM 稀疏重建 + 稠密匹配]
+下载: https://github.com/colmap/colmap/releases
+版本: 选 Windows CUDA 版本 ZIP 包
+安装: 解压到 D:\Tools\COLMAP\，将目录加入系统 PATH
+用途: A01-A07 全流程
+  - feature_extractor       特征提取
+  - exhaustive_matcher      特征匹配
+  - mapper                  增量式 SfM 重建
+  - image_undistorter       去畸变
+  - patch_match_stereo      MVS 稠密匹配
+  - stereo_fusion           点云融合
+  - poisson_mesher          Poisson 网格生成
+  - bundle_adjuster         光束平差
+
+[OpenMVS - MVS 密密重建 + 纹理映射]
+下载: https://github.com/cdcseacave/openMVS/releases/latest
+版本: 选 OpenMVS_Windows_x64_CUDA.7z
+安装: 解压到 D:\Tools\OpenMVS\，将 bin 目录加入系统 PATH
+用途: A07, A34-A38
+  - InterfaceCOLMAP         COLMAP 结果转 OpenMVS 格式
+  - DensifyPointCloud       稠密点云
+  - ReconstructMesh         网格重建
+  - RefineMesh              网格细化（可选）
+  - TextureMesh             纹理映射
+  - ExportMesh              导出 .ply/.obj
+
+============================================================
+【三、GPU/CUDA 环境】
+============================================================
+
+[NVIDIA 驱动]
+确认: nvidia-smi 命令显示 CUDA Version >= 12.8
+
+[CUDA Toolkit]
+版本: 12.8（与 PyTorch cu128 wheel 匹配）
+下载: https://developer.nvidia.com/cuda-12-8-0-download-archive
+
+[验证]
+python -c "import torch; print('CUDA:', torch.cuda.is_available())"
+# 预期: CUDA: True
+
+============================================================
+【四、快速安装命令（在 gisenv 中执行）】
+============================================================
+
+# 1. 激活环境
+conda activate gisenv
+
+# 2. pip 安装 Tier-1 基础 (栅格I/O + 矢量/坐标/PDF)
+pip install rasterio shapely pyproj reportlab
+
+# 3. pip 安装 Tier-2 核心 (OpenCV + Open3D + CSF)
+pip install opencv-python scikit-learn matplotlib open3d csf-py
+
+# 4. PyTorch CUDA 12.8
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+
+# 5. pycolmap (可选, 与 COLMAP CLI 二选一)
+pip install pycolmap
+
+# 5. 验证 Python 依赖
+python -c "
+import cv2; print('OpenCV', cv2.__version__)
+import rasterio; print('rasterio', rasterio.__version__)
+import shapely; print('shapely', shapely.__version__)
+import open3d; print('Open3D', open3d.__version__)
+import torch; print('PyTorch', torch.__version__, 'CUDA:', torch.cuda.is_available())
+import pycolmap; print('pycolmap OK')
+"
+
+# 6. 验证外部工具（需先下载安装并加入 PATH）
+colmap help
+DensifyPointCloud -h
+
+============================================================
+【五、38 个算法与依赖映射】
+============================================================
+
+M1 空中三角测量 (A01-A06)
+  依赖: COLMAP + pycolmap + OpenCV
+  A01 影像自动内定向          COLMAP feature_extractor
+  A02 SIFT特征提取与匹配      COLMAP exhaustive_matcher
+  A03 增量SfM重建             COLMAP mapper
+  A04 控制点识别与配准        pycolmap + GCP 文件
+  A05 全局Bundle Adjustment   COLMAP bundle_adjuster
+  A06 立体模型生成            COLMAP image_undistorter
+
+M2 DEM生产 (A07-A13)
+  依赖: COLMAP + OpenMVS + Open3D + CSF + scipy
+  A07 MVS密集匹配             COLMAP patch_match_stereo / OpenMVS DensifyPointCloud
+  A08 点云去噪                Open3D statistical_outlier_removal
+  A09 CSF地面滤波             csf-py
+  A10 IDW插值生成DEM          scipy.interpolate
+  A11 DEM平滑与孔洞填充       scipy.ndimage
+  A12 DEM精度评定             numpy 统计
+  A13 等高线生成              matplotlib.contour
+
+M3 DOM生产 (A14-A18)
+  依赖: OpenCV + rasterio + numpy
+  A14 数字微分纠正            rasterio + numpy 变换
+  A15 接缝线网络构建          numpy + scipy
+  A16 接缝线优化(Graph Cut)   PyMaxflow 或自实现
+  A17 镶嵌与色调均衡          OpenCV 多频段融合
+  A18 DOM精度评定             numpy 统计
+
+M4 DLG提取 (A19-A24)
+  依赖: PyTorch + OpenCV + rasterio
+  A19 多源数据融合            numpy 拼接
+  A20 深度学习语义分割        PyTorch + torchvision
+  A21 实例分割矢量化          OpenCV + shapely
+  A22 高程点提取              OpenCV 模板匹配
+  A23 DLG整饰出版             matplotlib/reportlab
+  A24 拓扑检查修复            shapely
+
+M5 航线规划 (A25-A28)
+  依赖: numpy + scipy
+  A25 航高-GSD反算            numpy
+  A26 重叠度优化              scipy.optimize
+  A27 测区分割航线生成        shapely
+  A28 障碍物避让              scipy.spatial
+
+M6 质量评定 (A29-A33)
+  依赖: numpy + scipy + matplotlib
+  A29 空三精度统计            numpy
+  A30 连接点分布评价          numpy + scipy
+  A31 影像质量检测            OpenCV
+  A32 DEM精度质检             numpy
+  A33 成果完整性核查           文件系统检查
+
+M7 三维建模 (A34-A38)
+  依赖: OpenMVS + Open3D
+  A34 Poisson表面重建         Open3D 或 OpenMVS ReconstructMesh
+  A35 纹理映射优化            OpenMVS TextureMesh
+  A36 建筑物单体化            Open3D + shapely
+  A37 模型LOD生成             Open3D simplify
+  A38 三维精度评定            Open3D + numpy
+
+============================================================
+【六、可选补充库】
+============================================================
+pymaxflow                     # Graph Cut 优化（A16，scipy.sparse.csgraph 可替代）
+tqdm>=4.65                    # 进度条（CLI 模式）
+# 注: shapely/pyproj/reportlab 已移入正式依赖（见上方 Tier-1）
